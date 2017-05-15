@@ -241,6 +241,10 @@ The above test shows that the marginal effect of education is significant.
 ##problem3
 First, I would like to test multivariate normality for the data using mardiatest.
 ```{r}
+data<-read_csv('biden.csv')  %>%
+  mutate(obs_num = as.numeric(rownames(.))) %>%
+  mutate(dem = factor(dem),
+         rep = factor(rep))
 data1=data%>%select(educ,age)
 mardiaTest(data1,qqplot=TRUE)
 ```
@@ -252,41 +256,3 @@ mardiaTest(data2%>%select(new_educ,new_age),qqplot=TRUE)
 ```
 
 There is slight improvement but does not solve the non-normal issue.
-```{r}
-biden.out <- amelia(as.data.frame(data2), m = 5, idvars = c("female", "dem", "rep", "educ", "age"))
-models_trans_imp <- data_frame(data = biden.out$imputations) %>%
-  mutate(model = map(data, ~ lm(biden ~ age + educ + female,data = .x)),coef = map(model, tidy)) %>%unnest(coef, .id = "id")
-
-models_trans_imp
-
-```
-
-```{r}
-mi.meld.plus <- function(df_tidy){
-  # transform data into appropriate matrix shape
-  coef.out <- df_tidy %>%
-    select(id:estimate) %>%
-    spread(term, estimate) %>%
-    select(-id)
-  
-  se.out <- df_tidy %>%
-    select(id, term, std.error) %>%
-    spread(term, std.error) %>%
-    select(-id)
-  
-  combined.results <- mi.meld(q = coef.out, se = se.out)
-  
-  data_frame(term = colnames(combined.results$q.mi),
-             estimate.mi = combined.results$q.mi[1, ],
-             std.error.mi = combined.results$se.mi[1, ])
-}
-```
-
-```{r}
-biden_imputed = mi.meld.plus(models_trans_imp)
-lm5 = lm(biden ~ age + female + educ,data=data)
-tidy(lm5) %>%
-  select(term, estimate, std.error)%>%
-  cbind(biden_imputed)
-```
-
