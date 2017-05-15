@@ -1,0 +1,292 @@
+---
+title: "ps3"
+author: "YangHou"
+output: md_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE,message=FALSE)
+library(tidyverse)
+library(forcats)
+library(broom)
+library(modelr)
+library(stringr)
+library(haven)
+library(car)
+library(lmtest)
+library(coefplot)
+library(RColorBrewer)
+library(Amelia)
+library(MVN)
+options(digits=3)
+set.seed(1234)
+```
+
+## Problem 1
+1.
+```{r}
+data=read_csv("biden.csv")%>%na.omit()%>%mutate(dem=factor(dem),rep=factor(rep))
+lm1=lm(biden~age+female+educ,data=data)
+tidy(lm1)
+```
+
+```{r}
+lm1_augment=data%>%mutate(hat = hatvalues(lm1),
+         student = rstudent(lm1),
+         cooksd = cooks.distance(lm1))%>%mutate(obs_num = as.numeric(rownames(.)))
+
+filter=lm1_augment%>%filter(hat > 2 * mean(hat) |
+           abs(student) >2 |
+           cooksd > 4 /(nrow(.) - (length(coef(lm1)) - 1) - 1))
+mean_hat=mean(hat)
+ggplot(filter, aes(hat, student)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_point(aes(size = cooksd), shape = 1) +
+  geom_vline(xintercept = 2*mean_hat, color='red',linetype = 2) +
+  scale_size_continuous(range = c(1, 20)) +
+  labs(x = "Leverage",
+       y = "Studentized residual") +
+  theme(legend.position = "none")
+```
+
+Now we have idendified the unusal and influential points, let's exam them further.
+
+```{r}
+lm1_augment <- lm1_augment %>%
+  mutate(`Unusual or Influential` = ifelse(obs_num %in% filter$obs_num, "TRUE", "FALSE"))
+lm1_augment %>% 
+  ggplot(aes(age, fill = `Unusual or Influential`)) +
+    geom_histogram(bins = 10) + 
+    labs(title = "Age",
+         subtitle = "All Observations with High Leverage, Discrepancy, or Influence",
+         x = "Age",
+         y = "Count")
+```
+
+```{r}
+lm1_augment %>% 
+  ggplot(aes(biden, fill = `Unusual or Influential`)) +
+    geom_histogram(bins = 10) + 
+    labs(title = "Biden Warmth Score",
+         subtitle = "All Observations with High Leverage, Discrepancy, or Influence",
+         x = "Score",
+         y = "Count")
+```
+
+```{r}
+lm1_augment %>% 
+  mutate(female = ifelse(female == 1, "Female", "Male")) %>%
+  ggplot(aes(female, fill = `Unusual or Influential`)) +
+    geom_histogram(stat = "count", bins = 10) + 
+    labs(title = "Gender",
+         subtitle = "All Observations with High Leverage, Discrepancy, or Influence",
+         x = "Gender",
+         y = "Count")
+```
+
+```{r}
+lm1_augment %>% 
+  ggplot(aes(educ, fill = `Unusual or Influential`)) +
+    geom_histogram(stat = "count", bins = 10) + 
+    labs(title = "Education",
+         subtitle = "All Observations with High Leverage, Discrepancy, or Influence",
+         x = "Education",
+         y = "Count")
+```
+
+```{r}
+lm1_augment %>% 
+  mutate(party = ifelse(dem == 1, "Democrat", 
+                        ifelse(rep == 1, "Republican",
+                               "Independent"))) %>%
+  ggplot(aes(party, fill = `Unusual or Influential`)) +
+    geom_histogram(stat = "count", bins = 10) + 
+    labs(title = "Party Affiliation",
+         subtitle = "All Observations with High Leverage, Discrepancy, or Influence",
+         x = "Party",
+         y = "Count")
+```
+
+From above analysis, we could see that order male who are a rep and give low biden score are usually in the usnual or influential group. 
+
+2.
+```{r}
+car::qqPlot(lm1)
+```
+
+The above quantile-comparison plot shows that many data points are out of the 95% C.I., which indicates the violation of the nomrality assumption. 
+
+```{r}
+lm2=lm(biden+1 ~ age + female + educ,data=data)
+boxCox(lm2)
+```
+
+As we can see, the boxcox method suggest a lamda 1.2 transformation.
+
+```{r}
+lm3=lm(biden^1.2~age+female+educ,data=data)
+car::qqPlot(lm3)
+```
+As we can see the normality assumption is baiicly held in above plot.
+
+3.
+```{r}
+data %>%
+  add_predictions(lm1) %>%
+  add_residuals(lm1) %>%
+  ggplot(aes(pred, resid)) +
+  geom_point(alpha = .2) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_quantile(method = "rqss", lambda = 5, quantiles = c(.05, .95)) +
+  labs(title = "Homoscedastic variance of error terms",
+       x = "Predicted values",
+       y = "Residuals")
+```
+
+```{r}
+bptest(lm1)
+```
+
+The above tests show that there exist heteroscedasticity in the model. It may result in biased standard errors estimations and thus inaccurate statistics and C.I..
+
+4.
+```{r}
+vif(lm1)
+```
+
+There is no multicollinearity in the model.
+
+##Problem 2
+1.
+```{r}
+lm4=lm(biden~age*educ,data=data)
+tidy(lm4)
+```
+
+```{r}
+instant_effect <- function(model, mod_var){
+  # get interaction term name
+  int.name <- names(model$coefficients)[[which(str_detect(names(model$coefficients), ":"))]]
+  
+  marg_var <- str_split(int.name, ":")[[1]][[which(str_split(int.name, ":")[[1]] != mod_var)]]
+  
+  # store coefficients and covariance matrix
+  beta.hat <- coef(model)
+  cov <- vcov(model)
+  
+  # possible set of values for mod_var
+  if(class(model)[[1]] == "lm"){
+    z <- seq(min(model$model[[mod_var]]), max(model$model[[mod_var]]))
+  } else {
+    z <- seq(min(model$data[[mod_var]]), max(model$data[[mod_var]]))
+  }
+  
+  # calculate instantaneous effect
+  dy.dx <- beta.hat[[marg_var]] + beta.hat[[int.name]] * z
+  
+  # calculate standard errors for instantaeous effect
+  se.dy.dx <- sqrt(cov[marg_var, marg_var] +
+                     z^2 * cov[int.name, int.name] +
+                     2 * z * cov[marg_var, int.name])
+  
+  # combine into data frame
+  data_frame(z = z,
+             dy.dx = dy.dx,
+             se = se.dy.dx)
+}
+
+# point range plot
+instant_effect(lm4, "educ") %>%
+  ggplot(aes(z, dy.dx,
+             ymin = dy.dx - 1.96 * se,
+             ymax = dy.dx + 1.96 * se)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(title = "Marginal effect of age",
+       subtitle = "By respondent education",
+       x = "Education",
+       y = "Estimated marginal effect")
+```
+
+The marginal effect of age is estimated above.
+
+```{r}
+linearHypothesis(lm4, "age + age:educ")
+```
+
+The above test shows that the marginal effect of age is significant. 
+
+2.
+```{r}
+instant_effect(lm4, "age") %>%
+  ggplot(aes(z, dy.dx,
+             ymin = dy.dx - 1.96 * se,
+             ymax = dy.dx + 1.96 * se)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  labs(title = "Marginal effect of education",
+       subtitle = "By respondent age",
+       x = "Age",
+       y = "Estimated marginal effect")
+```
+
+The marginal effect of the education is estimated above.
+
+```{r}
+linearHypothesis(lm4, "educ + age:educ")
+```
+
+The above test shows that the marginal effect of education is significant.
+
+##problem3
+First, I would like to test multivariate normality for the data using mardiatest.
+```{r}
+data1=data%>%select(educ,age)
+mardiaTest(data1,qqplot=TRUE)
+```
+
+From the above results we could tell the data is not multivariate normal. We could do a power transformation.
+```{r}
+data2=data1%>%mutate(new_age=age^2,new_educ=educ^2)
+mardiaTest(data2%>%select(new_educ,new_age),qqplot=TRUE)
+```
+
+There is slight improvement but does not solve the non-normal issue.
+```{r}
+biden.out <- amelia(as.data.frame(data2), m = 5, idvars = c("female", "dem", "rep", "educ", "age"))
+models_trans_imp <- data_frame(data = biden.out$imputations) %>%
+  mutate(model = map(data, ~ lm(biden ~ age + educ + female,data = .x)),coef = map(model, tidy)) %>%unnest(coef, .id = "id")
+
+models_trans_imp
+
+```
+
+```{r}
+mi.meld.plus <- function(df_tidy){
+  # transform data into appropriate matrix shape
+  coef.out <- df_tidy %>%
+    select(id:estimate) %>%
+    spread(term, estimate) %>%
+    select(-id)
+  
+  se.out <- df_tidy %>%
+    select(id, term, std.error) %>%
+    spread(term, std.error) %>%
+    select(-id)
+  
+  combined.results <- mi.meld(q = coef.out, se = se.out)
+  
+  data_frame(term = colnames(combined.results$q.mi),
+             estimate.mi = combined.results$q.mi[1, ],
+             std.error.mi = combined.results$se.mi[1, ])
+}
+```
+
+```{r}
+biden_imputed = mi.meld.plus(models_trans_imp)
+lm5 = lm(biden ~ age + female + educ,data=data)
+tidy(lm5) %>%
+  select(term, estimate, std.error)%>%
+  cbind(biden_imputed)
+```
+
